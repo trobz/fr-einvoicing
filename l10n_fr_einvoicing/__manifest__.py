@@ -17,6 +17,7 @@
     ],
     # "excludes": ["l10n_fr_chorus_account"],  # we need the module for the transition
     "external_dependencies": {"python": ["pyfrctc>=0.14"]},
+    "pre_init_hook": "pre_init_hook",
     "data": [
         "security/ir.model.access.csv",
         "security/ir_rule.xml",
