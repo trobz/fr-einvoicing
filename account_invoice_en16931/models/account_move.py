@@ -5,6 +5,8 @@
 
 import base64
 import logging
+import os
+import tempfile
 from io import BytesIO
 from pprint import pformat
 from urllib.parse import urljoin
@@ -920,17 +922,35 @@ class AccountMove(models.Model):
             xml_bytes, attachments = self.generate_en16931_xml(
                 "factur-x", "extended", invoice_format
             )
-            generate_from_file(
-                pdf_bytesio,
-                xml_bytes,
-                flavor="factur-x",
-                level="extended",
-                check_xsd=False,
-                check_schematron=False,
-                pdf_metadata=pdf_metadata,
-                lang=lang,
-                attachments=attachments,
-            )
+            # factur-x bug workaround: when pdf_file is a file object,
+            # generate_from_file() does PdfWriter(clone_from=pdf_file) (which
+            # leaves the stream position mid-file) then writes the new PDF at
+            # the CURRENT position -> the result is appended after the
+            # original PDF (2 %PDF- headers, corrupted file). output_pdf_file
+            # only accepts a path (not a BytesIO), so use temp files for both
+            # input and output, then write the clean result back to the stream.
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tmp_in = os.path.join(tmp_dir, "in.pdf")
+                tmp_out = os.path.join(tmp_dir, "out.pdf")
+                with open(tmp_in, "wb") as f:
+                    f.write(pdf_bytesio.getvalue())
+                generate_from_file(
+                    tmp_in,
+                    xml_bytes,
+                    flavor="factur-x",
+                    level="extended",
+                    check_xsd=False,
+                    check_schematron=False,
+                    pdf_metadata=pdf_metadata,
+                    lang=lang,
+                    attachments=attachments,
+                    output_pdf_file=tmp_out,
+                )
+                with open(tmp_out, "rb") as f:
+                    new_pdf = f.read()
+            pdf_bytesio.seek(0)
+            pdf_bytesio.write(new_pdf)
+            pdf_bytesio.truncate()
             logger.info("Factur-X PDF invoice successfully generated")
         elif invoice_format == "pdf_ubl":
             ubl_xml_bytes = self.generate_en16931_xml(
@@ -946,7 +966,15 @@ class AccountMove(models.Model):
                     NameObject("/PageMode"): NameObject("/UseAttachments"),
                 }
             )
-            pdf_writer.write(pdf_bytesio)
+            # Same issue as the facturx branch above: PdfWriter.write()
+            # writes at the current stream position (not from 0), so writing
+            # back into the input BytesIO would corrupt the file.
+            with BytesIO() as out_bytesio:
+                pdf_writer.write(out_bytesio)
+                new_pdf = out_bytesio.getvalue()
+            pdf_bytesio.seek(0)
+            pdf_bytesio.write(new_pdf)
+            pdf_bytesio.truncate()
 
     def _get_pdf_invoice_bin(self):
         """This works with both qweb and py3o"""
